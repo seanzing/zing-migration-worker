@@ -49,6 +49,23 @@ async function uploadFile(repoPath, content, sha) {
     body: JSON.stringify(body),
   });
 
+  if (res.status === 409) {
+    // SHA conflict — re-fetch current SHA and retry once
+    const freshSha = await getFileSha(repoPath);
+    const retryBody = { message: `migrate: ${repoPath}`, content };
+    if (freshSha) retryBody.sha = freshSha;
+    const retry = await fetch(`${GITHUB_API}/repos/${REPO}/contents/${repoPath}`, {
+      method: 'PUT',
+      headers: headers(),
+      body: JSON.stringify(retryBody),
+    });
+    if (!retry.ok) {
+      const text = await retry.text();
+      throw new Error(`GitHub PUT ${repoPath}: ${retry.status} ${text}`);
+    }
+    return;
+  }
+
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`GitHub PUT ${repoPath}: ${res.status} ${text}`);
@@ -59,20 +76,16 @@ export async function pushToGitHub(slug, localDir, onLog) {
   const allFiles = walkDir(localDir);
   let uploaded = 0;
 
-  // Process in batches of 5 to avoid rate limits
-  for (let i = 0; i < allFiles.length; i += 5) {
-    const batch = allFiles.slice(i, i + 5);
-    await Promise.all(batch.map(async (filePath) => {
-      const relPath = relative(localDir, filePath);
-      const repoPath = `${slug}/${relPath}`;
-      const content = readFileSync(filePath).toString('base64');
+  // Sequential uploads — avoids SHA race conditions (concurrent batches can collide)
+  for (const filePath of allFiles) {
+    const relPath = relative(localDir, filePath);
+    const repoPath = `${slug}/${relPath}`;
+    const content = readFileSync(filePath).toString('base64');
 
-      // Check if file exists to get SHA for update
-      const sha = await getFileSha(repoPath);
-      await uploadFile(repoPath, content, sha);
-      uploaded++;
-      if (onLog) onLog(`  Uploaded ${repoPath} (${uploaded}/${allFiles.length})`);
-    }));
+    const sha = await getFileSha(repoPath);
+    await uploadFile(repoPath, content, sha);
+    uploaded++;
+    if (onLog) onLog(`  Uploaded ${repoPath} (${uploaded}/${allFiles.length})`);
   }
 
   return { filesUploaded: uploaded };
