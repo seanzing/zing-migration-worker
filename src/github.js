@@ -26,67 +26,75 @@ function walkDir(dir) {
   return files;
 }
 
-async function getFileSha(path) {
-  const res = await fetch(`${GITHUB_API}/repos/${REPO}/contents/${path}`, {
-    headers: headers(),
+async function gh(path, opts = {}) {
+  const res = await fetch(`${GITHUB_API}/repos/${REPO}${path}`, {
+    ...opts,
+    headers: { ...headers(), ...opts.headers },
   });
-  if (res.status === 404) return null;
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.sha;
-}
-
-async function uploadFile(repoPath, content, sha) {
-  const body = {
-    message: `migrate: ${repoPath}`,
-    content: content,
-  };
-  if (sha) body.sha = sha;
-
-  const res = await fetch(`${GITHUB_API}/repos/${REPO}/contents/${repoPath}`, {
-    method: 'PUT',
-    headers: headers(),
-    body: JSON.stringify(body),
-  });
-
-  if (res.status === 409) {
-    // SHA conflict — re-fetch current SHA and retry once
-    const freshSha = await getFileSha(repoPath);
-    const retryBody = { message: `migrate: ${repoPath}`, content };
-    if (freshSha) retryBody.sha = freshSha;
-    const retry = await fetch(`${GITHUB_API}/repos/${REPO}/contents/${repoPath}`, {
-      method: 'PUT',
-      headers: headers(),
-      body: JSON.stringify(retryBody),
-    });
-    if (!retry.ok) {
-      const text = await retry.text();
-      throw new Error(`GitHub PUT ${repoPath}: ${retry.status} ${text}`);
-    }
-    return;
-  }
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GitHub PUT ${repoPath}: ${res.status} ${text}`);
-  }
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GitHub ${opts.method || 'GET'} ${path}: ${res.status} ${text}`);
+  return JSON.parse(text);
 }
 
 export async function pushToGitHub(slug, localDir, onLog) {
   const allFiles = walkDir(localDir);
-  let uploaded = 0;
+  if (onLog) onLog(`  Creating ${allFiles.length} blobs...`);
 
-  // Sequential uploads — avoids SHA race conditions (concurrent batches can collide)
-  for (const filePath of allFiles) {
-    const relPath = relative(localDir, filePath);
-    const repoPath = `${slug}/${relPath}`;
-    const content = readFileSync(filePath).toString('base64');
-
-    const sha = await getFileSha(repoPath);
-    await uploadFile(repoPath, content, sha);
-    uploaded++;
-    if (onLog) onLog(`  Uploaded ${repoPath} (${uploaded}/${allFiles.length})`);
+  // 1. Create blobs for all files (parallel batches of 10)
+  const blobShas = [];
+  for (let i = 0; i < allFiles.length; i += 10) {
+    const batch = allFiles.slice(i, i + 10);
+    const results = await Promise.all(batch.map(async (filePath) => {
+      const content = readFileSync(filePath).toString('base64');
+      const blob = await gh('/git/blobs', {
+        method: 'POST',
+        body: JSON.stringify({ content, encoding: 'base64' }),
+      });
+      return { filePath, sha: blob.sha };
+    }));
+    blobShas.push(...results);
+    if (onLog) onLog(`  Blobs: ${Math.min(i + 10, allFiles.length)}/${allFiles.length}`);
   }
 
-  return { filesUploaded: uploaded };
+  // 2. Get current HEAD commit and tree SHA
+  const ref = await gh('/git/ref/heads/main');
+  const headSha = ref.object.sha;
+  const headCommit = await gh(`/git/commits/${headSha}`);
+  const baseTreeSha = headCommit.tree.sha;
+
+  // 3. Create new tree with all files
+  if (onLog) onLog('  Building tree...');
+  const treeItems = blobShas.map(({ filePath, sha }) => {
+    const relPath = relative(localDir, filePath);
+    return {
+      path: `${slug}/${relPath}`,
+      mode: '100644',
+      type: 'blob',
+      sha,
+    };
+  });
+  const tree = await gh('/git/trees', {
+    method: 'POST',
+    body: JSON.stringify({ base_tree: baseTreeSha, tree: treeItems }),
+  });
+
+  // 4. Create commit
+  if (onLog) onLog('  Committing...');
+  const commit = await gh('/git/commits', {
+    method: 'POST',
+    body: JSON.stringify({
+      message: `migrate: add ${slug} (${allFiles.length} files)`,
+      tree: tree.sha,
+      parents: [headSha],
+    }),
+  });
+
+  // 5. Update ref
+  await gh('/git/refs/heads/main', {
+    method: 'PATCH',
+    body: JSON.stringify({ sha: commit.sha }),
+  });
+
+  if (onLog) onLog(`  ✅ Pushed ${allFiles.length} files in 1 commit (${commit.sha.slice(0, 7)})`);
+  return { filesUploaded: allFiles.length };
 }
