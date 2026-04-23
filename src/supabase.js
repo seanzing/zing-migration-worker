@@ -10,6 +10,7 @@ export async function createSiteRecord({ slug, name, sourceUrl }) {
   const { error } = await supabase.from('sites').upsert({
     id: slug,
     business_name: name || domain,
+    owner_email: 'publishing@zing-work.com',
     status: 'draft',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
