@@ -105,14 +105,17 @@ async function runNext() {
     const { filesUploaded } = await pushToGitHub(job.slug, siteOutputDir, (line) => broadcast(job, line));
     broadcast(job, `Pushed ${filesUploaded} files to GitHub.`);
 
-    // Create Supabase record
+    // Create Supabase record (non-fatal, 15s timeout)
     broadcast(job, 'Creating Supabase site record...');
-    await createSiteRecord({
-      slug: job.slug,
-      name: job.name,
-      sourceUrl: job.url,
-    });
-    broadcast(job, 'Supabase record created.');
+    try {
+      await Promise.race([
+        createSiteRecord({ slug: job.slug, name: job.name, sourceUrl: job.url }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase timeout')), 15000)),
+      ]);
+      broadcast(job, 'Supabase record created.');
+    } catch (sbErr) {
+      broadcast(job, `Warning: Supabase record skipped — ${sbErr.message}`);
+    }
 
     job.status = 'done';
     job.finishedAt = new Date().toISOString();
