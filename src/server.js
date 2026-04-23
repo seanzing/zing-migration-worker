@@ -31,6 +31,12 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', jobs: getJobCount() });
 });
 
+// Emergency shutdown — kills this instance so Railway replaces it
+app.post('/admin/shutdown', auth, (req, res) => {
+  res.json({ bye: true });
+  setTimeout(() => process.exit(0), 200);
+});
+
 // Create job(s)
 app.post('/jobs', auth, (req, res) => {
   const { url, slug, name, sites } = req.body;
