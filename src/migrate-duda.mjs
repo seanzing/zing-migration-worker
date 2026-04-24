@@ -28,11 +28,12 @@ const SITES_DIR = join(__dirname, '../sites');
 
 const { values: args } = parseArgs({
   options: {
-    url:   { type: 'string' },
-    slug:  { type: 'string' },
-    pages: { type: 'string', default: '20' },
-    wait:  { type: 'string', default: '2000' },
-    help:  { type: 'boolean', default: false },
+    url:          { type: 'string' },
+    slug:         { type: 'string' },
+    pages:        { type: 'string', default: '20' },
+    wait:         { type: 'string', default: '2000' },
+    'output-dir': { type: 'string', default: '' },
+    help:         { type: 'boolean', default: false },
   },
 });
 
@@ -52,7 +53,7 @@ const rootUrl  = new URL(args.url);
 const slug     = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
 const maxPages = parseInt(args.pages) || 20;
 const waitMs   = parseInt(args.wait) || 2000;
-const siteDir  = join(SITES_DIR, slug);
+const siteDir  = args['output-dir'] ? join(args['output-dir'], slug) : join(SITES_DIR, slug);
 const assetsDir = join(siteDir, 'assets');
 
 // Tracking
