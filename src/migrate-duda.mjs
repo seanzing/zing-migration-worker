@@ -706,6 +706,16 @@ function rewriteHtml(html, pageUrl, sitePrefix = '') {
   // Remove Duda CDN preconnect hints (irrelevant after localization)
   $('link[rel="preconnect"][href*="cdn-website.com"], link[rel="dns-prefetch"][href*="cdn-website.com"]').remove();
 
+  // Restore anchor nav targets: Duda uses data-anchor="section-name" instead of id="section-name".
+  // Duda's JS maps these at runtime — without it, href="#section-name" nav links go nowhere.
+  // Adding a matching id attribute restores native browser anchor jumping with zero JS.
+  $('[data-anchor]').each((_, el) => {
+    const anchor = $(el).attr('data-anchor');
+    if (anchor && !$(el).attr('id')) {
+      $(el).attr('id', anchor);
+    }
+  });
+
   // Strip Duda-internal data attributes that aren't used for display (keep HTML clean)
   $('[data-dm-image-path]').removeAttr('data-dm-image-path');
   $('[data-dm-multisize-attr]').removeAttr('data-dm-multisize-attr');
