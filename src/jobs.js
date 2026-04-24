@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import { mkdirSync } from 'fs';
+import { mkdirSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
@@ -140,6 +140,9 @@ async function runNext() {
 
   const outputDir = '/tmp/migrations';
   const siteOutputDir = join(outputDir, job.slug);
+  // Always wipe the output dir before migrating — prevents stale files from
+  // prior runs on the same Railway instance polluting the new migration.
+  rmSync(siteOutputDir, { recursive: true, force: true });
   mkdirSync(siteOutputDir, { recursive: true });
 
   broadcast(job, `Starting migration for ${job.url} → ${job.slug}`);
