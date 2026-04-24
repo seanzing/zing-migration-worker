@@ -762,11 +762,13 @@ function rewriteHtml(html, pageUrl, sitePrefix = '') {
       if (isInternalUrl(absUrl)) {
         const u = new URL(absUrl);
         let path = u.pathname;
+        const hash = u.hash || ''; // preserve #anchor fragments
         if (path === '/' || path === '') {
-          $(el).attr('href', `/${slug}/`);
+          // Pure anchor on the home page — keep as #fragment (no page nav needed)
+          $(el).attr('href', hash || `/${slug}/`);
         } else {
           path = path.replace(/\/+$/, '');
-          $(el).attr('href', `/${slug}${path}/`);
+          $(el).attr('href', `/${slug}${path}/${hash}`);
         }
       }
     } catch {}
