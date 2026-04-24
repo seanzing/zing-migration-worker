@@ -40,20 +40,24 @@ export async function pushToGitHub(slug, localDir, onLog) {
   const allFiles = walkDir(localDir);
   if (onLog) onLog(`  Creating ${allFiles.length} blobs...`);
 
-  // 1. Create blobs for all files (parallel batches of 10)
-  const blobShas = [];
-  for (let i = 0; i < allFiles.length; i += 10) {
-    const batch = allFiles.slice(i, i + 10);
-    const results = await Promise.all(batch.map(async (filePath) => {
+  // 1. Create blobs for all files — 25 concurrent (was 10, ~2.5x faster)
+  //    GitHub authenticated limit is 5000 req/hr; 25 concurrent is well within burst tolerance.
+  const BLOB_CONCURRENCY = 25;
+  const blobShas = new Array(allFiles.length);
+  let blobsDone = 0;
+
+  for (let i = 0; i < allFiles.length; i += BLOB_CONCURRENCY) {
+    const batch = allFiles.slice(i, i + BLOB_CONCURRENCY);
+    await Promise.all(batch.map(async (filePath, j) => {
       const content = readFileSync(filePath).toString('base64');
       const blob = await gh('/git/blobs', {
         method: 'POST',
         body: JSON.stringify({ content, encoding: 'base64' }),
       });
-      return { filePath, sha: blob.sha };
+      blobShas[i + j] = { filePath, sha: blob.sha };
+      blobsDone++;
     }));
-    blobShas.push(...results);
-    if (onLog) onLog(`  Blobs: ${Math.min(i + 10, allFiles.length)}/${allFiles.length}`);
+    if (onLog) onLog(`  Blobs: ${Math.min(i + BLOB_CONCURRENCY, allFiles.length)}/${allFiles.length}`);
   }
 
   // 2. Get current HEAD commit and tree SHA
