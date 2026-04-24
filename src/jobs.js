@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { runMigration } from './migrate-runner.js';
 import { pushToGitHub } from './github.js';
-import { createSiteRecord, updateSitePreviewUrl } from './supabase.js';
+import { createJobRecord, completeJobRecord, failJobRecord } from './supabase.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WRANGLER = join(__dirname, '../node_modules/.bin/wrangler');
@@ -74,6 +74,12 @@ export function createJob(url, slug, name) {
     result: null,
   };
   jobs.set(job.id, job);
+
+  // Persist to Supabase immediately so job survives Railway blue-green restarts
+  createJobRecord({ slug, name: name || '', sourceUrl: url }).catch(err => {
+    console.warn(`[supabase] Failed to create job record for ${slug}: ${err.message}`);
+  });
+
   return job;
 }
 
@@ -157,16 +163,16 @@ async function runNext() {
     // Deploy to Cloudflare Pages (non-fatal)
     const previewUrl = await deployToCloudflare(job.slug, siteOutputDir, (line) => broadcast(job, line));
 
-    // Create/update Supabase record (non-fatal, 15s timeout)
-    broadcast(job, 'Creating Supabase site record...');
+    // Update Supabase record to draft + preview_url (non-fatal, 15s timeout)
+    broadcast(job, 'Updating Supabase record...');
     try {
       await Promise.race([
-        createSiteRecord({ slug: job.slug, name: job.name, sourceUrl: job.url, previewUrl }),
+        completeJobRecord({ slug: job.slug, previewUrl }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase timeout')), 15000)),
       ]);
-      broadcast(job, 'Supabase record created.');
+      broadcast(job, 'Supabase record updated.');
     } catch (sbErr) {
-      broadcast(job, `Warning: Supabase record skipped — ${sbErr.message}`);
+      broadcast(job, `Warning: Supabase update skipped — ${sbErr.message}`);
     }
 
     job.status = 'done';
@@ -185,6 +191,7 @@ async function runNext() {
     job.finishedAt = new Date().toISOString();
     job.error = err.message;
     broadcast(job, `[ERROR] ${err.message}`);
+    failJobRecord({ slug: job.slug, errorMsg: err.message }).catch(() => {});
 
     for (const res of job.subscribers) {
       try { res.end(); } catch {}
