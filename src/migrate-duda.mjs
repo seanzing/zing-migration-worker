@@ -22,6 +22,7 @@ import { parseArgs } from 'node:util';
 import { createHash } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const SITES_DIR = join(__dirname, '../sites');
 
 /* ── CLI args ───────────────────────────────────────────────────────── */
 
@@ -31,7 +32,6 @@ const { values: args } = parseArgs({
     slug:  { type: 'string' },
     pages: { type: 'string', default: '20' },
     wait:  { type: 'string', default: '2000' },
-    'output-dir': { type: 'string', default: '' },
     help:  { type: 'boolean', default: false },
   },
 });
@@ -48,7 +48,6 @@ Options:
   process.exit(0);
 }
 
-const SITES_DIR = args['output-dir'] || join(__dirname, '../sites');
 const rootUrl  = new URL(args.url);
 const slug     = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40);
 const maxPages = parseInt(args.pages) || 20;
@@ -63,6 +62,10 @@ const crawledPages   = new Map(); // url → html
 const redirectMap    = new Map(); // original url → final url (for redirect tracking)
 const errors         = [];
 const startTime      = Date.now();
+
+// Nav slugs — extracted from the home page nav, written to the report so
+// Pixel can show nav pages vs. internal/subpages separately
+let homeNavSlugs     = null;
 
 /* ── Utility ────────────────────────────────────────────────────────── */
 
@@ -783,6 +786,23 @@ function rewriteHtml(html, pageUrl, sitePrefix = '') {
 
   // ── Rebuild nav — runs after all rewriteAttr so data-logo-src is already local ──
   const navData = extractNavData($);
+
+  // Capture nav slugs from home page for the migration report
+  if (homeNavSlugs === null) {
+    const allNavItems = [...(navData.leftItems || []), ...(navData.rightItems || [])];
+    const slugSet = new Set();
+    const collectSlugs = (items) => {
+      for (const item of items) {
+        try {
+          const path = new URL(item.href, rootUrl.origin).pathname.replace(/^\/|\/$/g, '');
+          slugSet.add(path || ''); // '' = home
+        } catch {}
+        if (item.subs) collectSlugs(item.subs);
+      }
+    };
+    collectSlugs(allNavItems);
+    homeNavSlugs = [...slugSet];
+  }
   const navEl = $('nav.main-navigation, nav.unifiednav, nav[class*="navigation"]').first();
   const navWrapper = navEl.parent().parent();
   const navWrapperTag = navWrapper.prop('tagName');
@@ -841,64 +861,84 @@ async function main() {
   const pageUrls = await discoverPages();
   console.log(`  Will process up to ${Math.min(pageUrls.length, maxPages)} pages`);
 
-  // Phase 2: Render each page with Playwright
-  console.log('\n[2] Rendering pages with Playwright...');
+  // Phase 2: Render pages with Playwright — 3 concurrent pages (was sequential)
+  console.log('\n[2] Rendering pages with Playwright (3 concurrent)...');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     viewport: { width: 1440, height: 900 },
   });
 
+  const CRAWL_CONCURRENCY = 3;
   const visited = new Set();
   const queue = [...pageUrls];
   let pageNum = 0;
 
-  while (queue.length > 0 && crawledPages.size < maxPages) {
-    const url = queue.shift();
-    const norm = normalizeUrl(url);
-    if (!norm || visited.has(norm)) continue;
-    // Skip if this URL's final destination was already crawled under a different slug
-    if (redirectMap.has(norm)) continue;
-    visited.add(norm);
-    pageNum++;
-
-    console.log(`  [${pageNum}/${maxPages}] ${url}`);
-
-    try {
-      const page = await context.newPage();
-
-      // Block analytics/tracking
-      await page.route('**/*', route => {
+  // Pre-open 3 browser pages with routing set up
+  const pagePool = await Promise.all(
+    Array.from({ length: CRAWL_CONCURRENCY }, async () => {
+      const p = await context.newPage();
+      await p.route('**/*', route => {
         if (isSkippableUrl(route.request().url())) return route.abort();
         return route.continue();
       });
+      return p;
+    })
+  );
 
-      const { html, links, assetCount, finalUrl } = await renderPage(page, url);
-      // Store under the REQUESTED url so nav hrefs resolve correctly
-      crawledPages.set(url, html);
-      // Track redirect if Playwright followed one
-      const normFinal = normalizeUrl(finalUrl || url);
-      const normReq   = normalizeUrl(url);
-      if (normFinal && normReq && normFinal !== normReq) {
-        redirectMap.set(normFinal, normReq); // final → original (so we can de-dup)
-        console.log(`    ↳ redirected from ${finalUrl}`);
+  // Pool worker — each holds a browser page and pulls URLs until queue is drained
+  async function crawlWorker(page) {
+    while (crawledPages.size < maxPages) {
+      // Synchronously grab + mark next unvisited URL (no await = no race condition)
+      let url = null;
+      while (queue.length > 0) {
+        const candidate = queue.shift();
+        const norm = normalizeUrl(candidate);
+        if (!norm || visited.has(norm) || redirectMap.has(norm)) continue;
+        visited.add(norm); // mark before any await so other workers skip it
+        url = candidate;
+        break;
       }
-      console.log(`    ${assetCount} assets captured`);
 
-      // Add discovered links to queue
-      for (const link of links) {
-        const n = normalizeUrl(link);
-        if (n && !visited.has(n) && isInternalUrl(link)) {
-          queue.push(link);
+      if (!url) {
+        // Queue empty — wait briefly in case other workers add links, then exit
+        await new Promise(r => setTimeout(r, 150));
+        if (queue.length === 0) break;
+        continue;
+      }
+
+      const myNum = ++pageNum;
+      console.log(`  [${myNum}/${maxPages}] ${url}`);
+
+      try {
+        const { html, links, assetCount, finalUrl } = await renderPage(page, url);
+        crawledPages.set(url, html);
+
+        const normFinal = normalizeUrl(finalUrl || url);
+        const normReq   = normalizeUrl(url);
+        if (normFinal && normReq && normFinal !== normReq) {
+          redirectMap.set(normFinal, normReq);
+          console.log(`    ↳ redirected from ${finalUrl}`);
         }
-      }
+        console.log(`    ${assetCount} assets captured`);
 
-      await page.close();
-    } catch (err) {
-      console.log(`    ERROR: ${err.message}`);
-      errors.push({ url, error: err.message });
+        for (const link of links) {
+          const n = normalizeUrl(link);
+          if (n && !visited.has(n) && isInternalUrl(link)) {
+            queue.push(link);
+          }
+        }
+      } catch (err) {
+        console.log(`    ERROR: ${err.message}`);
+        errors.push({ url, error: err.message });
+      }
     }
   }
+
+  // Run all 3 workers in parallel, close pages when done
+  await Promise.all(pagePool.map(page =>
+    crawlWorker(page).finally(() => page.close())
+  ));
 
   await browser.close();
   console.log(`  Rendered ${crawledPages.size} pages, captured ${capturedAssets.size} unique assets`);
@@ -1066,6 +1106,9 @@ async function main() {
     assetsMapped: assetMap.size,
     durationMs: Date.now() - startTime,
     errors,
+    // Nav slugs from the home page nav bar (path segments, '' = home).
+    // Pixel uses this to distinguish primary nav pages from internal subpages.
+    navSlugs: homeNavSlugs || [],
   };
   writeFileSync(join(siteDir, '_migrate-report.json'), JSON.stringify(report, null, 2));
   console.log('  _migrate-report.json');
