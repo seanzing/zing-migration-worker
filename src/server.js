@@ -34,7 +34,8 @@ app.get('/health', (req, res) => {
 // Emergency shutdown — kills this instance so Railway replaces it
 app.post('/admin/shutdown', auth, (req, res) => {
   res.json({ bye: true });
-  setTimeout(() => process.exit(0), 200);
+  // Exit code 1 so Railway treats this as a crash and restarts the container
+  setTimeout(() => process.exit(1), 200);
 });
 
 // Create job(s)
