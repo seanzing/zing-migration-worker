@@ -440,6 +440,20 @@ function parseRgba(val) {
 function luminance({r,g,b}) { return 0.299*r + 0.587*g + 0.114*b; }
 function textOnBg(color) { const c = parseRgba(color); return (c && luminance(c) > 140) ? '#000' : '#fff'; }
 
+// If perceived luminance contrast is poor, flip text to white or dark charcoal
+function ensureContrast(textColor, bgColor) {
+  const fg = parseRgba(textColor);
+  const bg = parseRgba(bgColor);
+  if (!fg || !bg) return textColor;
+  const fgL = luminance(fg);
+  const bgL = luminance(bg);
+  // If both are dark (both < 140) or both are light (both >= 140), flip text
+  if ((fgL < 140) === (bgL < 140)) {
+    return bgL >= 140 ? 'rgba(30,30,30,1)' : 'rgba(255,255,255,1)';
+  }
+  return textColor;
+}
+
 function extractNavData($) {
   const styleBlocks = [];
   $('style').each((_, el) => styleBlocks.push($(el).html() || ''));
@@ -457,13 +471,24 @@ function extractNavData($) {
   }
   if (!logoSrc) {
     const logoImg = nav.find('img').first();
-    logoSrc = logoImg.attr('src') || '';
+    // Check both src and data-src — Duda lazy-loads logos via data-src
+    logoSrc = logoImg.attr('src') || logoImg.attr('data-src') || '';
     logoAlt = logoImg.attr('alt') || '';
   }
   if (!logoSrc) {
     const img = $('img[alt*="logo" i], img[src*="logo" i]').first();
-    logoSrc = img.attr('src') || '';
+    logoSrc = img.attr('src') || img.attr('data-src') || '';
     logoAlt = img.attr('alt') || logoAlt;
+  }
+  // Last resort: any img in the header area that isn't a tiny icon (<30px)
+  if (!logoSrc) {
+    $('header img, .dmHeader img, [class*="header"] img').each((_, el) => {
+      if (logoSrc) return;
+      const w = parseInt($(el).attr('width') || '100');
+      if (w < 30) return; // skip tiny icons
+      logoSrc = $(el).attr('src') || $(el).attr('data-src') || '';
+      logoAlt = $(el).attr('alt') || '';
+    });
   }
 
   // ── Nav items: extract all, then split for SPLIT layout ────────────
@@ -525,6 +550,11 @@ function extractNavData($) {
   // Font info
   const fontFamilyMatch = allCss.match(/font-family\s*:\s*([^;,"]+)/);
   const navFont = fontFamilyMatch ? fontFamilyMatch[1].trim() : 'inherit';
+
+  // Auto-correct link color if it doesn't contrast enough against the nav background
+  navLinkColor = ensureContrast(navLinkColor, navBg);
+  // Accent color should also contrast against nav background (for hover underlines etc.)
+  accentColor = ensureContrast(accentColor, navBg);
 
   return { logoSrc, logoAlt, isSplit, leftItems, rightItems, accentColor, accentUnderline, navBg, navLinkColor, navFont };
 }
