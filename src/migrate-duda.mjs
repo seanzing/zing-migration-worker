@@ -440,6 +440,26 @@ function parseRgba(val) {
 function luminance({r,g,b}) { return 0.299*r + 0.587*g + 0.114*b; }
 function textOnBg(color) { const c = parseRgba(color); return (c && luminance(c) > 140) ? '#000' : '#fff'; }
 
+// Resolve a CSS var(--name) reference from allCss, returning the raw value or null
+function resolveCssVar(value, allCss) {
+  if (!value) return value;
+  const m = value.match(/^var\(\s*(--[\w-]+)\s*\)/);
+  if (!m) return value; // not a var()
+  const varName = m[1];
+  const defMatch = allCss.match(new RegExp(varName + '\\s*:\\s*([^;\\n}]+)'));
+  if (defMatch) return defMatch[1].trim();
+  return null; // var exists but not defined in allCss
+}
+
+// Normalize a color value — resolves var(), treats 'inherit'/'currentColor' as null
+function resolveColor(value, allCss) {
+  if (!value) return null;
+  const v = value.trim();
+  if (v === 'inherit' || v === 'currentColor' || v === 'transparent' || v === 'unset') return null;
+  if (v.startsWith('var(')) return resolveCssVar(v, allCss);
+  return v;
+}
+
 // If perceived luminance contrast is poor, flip text to white or dark charcoal
 function ensureContrast(textColor, bgColor) {
   const fg = parseRgba(textColor);
@@ -551,10 +571,19 @@ function extractNavData($) {
   const fontFamilyMatch = allCss.match(/font-family\s*:\s*([^;,"]+)/);
   const navFont = fontFamilyMatch ? fontFamilyMatch[1].trim() : 'inherit';
 
-  // Auto-correct link color if it doesn't contrast enough against the nav background
-  navLinkColor = ensureContrast(navLinkColor, navBg);
-  // Accent color should also contrast against nav background (for hover underlines etc.)
-  accentColor = ensureContrast(accentColor, navBg);
+  // Resolve CSS variables to real color values so contrast check works
+  const resolvedNavBg       = resolveColor(navBg, allCss)       || 'rgba(255,255,255,1)';
+  const resolvedNavLink     = resolveColor(navLinkColor, allCss) || null;
+  const resolvedAccent      = resolveColor(accentColor, allCss)  || null;
+
+  // Use resolved values for the built nav (so var() refs don't end up in inline CSS)
+  navBg       = resolvedNavBg;
+  navLinkColor = resolvedNavLink
+    ? ensureContrast(resolvedNavLink, resolvedNavBg)
+    : ensureContrast('rgba(102,102,102,1)', resolvedNavBg); // fallback grey
+  accentColor = resolvedAccent
+    ? ensureContrast(resolvedAccent, resolvedNavBg)
+    : ensureContrast('rgba(126,166,125,1)', resolvedNavBg); // fallback sage
 
   return { logoSrc, logoAlt, isSplit, leftItems, rightItems, accentColor, accentUnderline, navBg, navLinkColor, navFont };
 }
