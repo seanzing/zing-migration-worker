@@ -1,0 +1,6 @@
+[deploy]
+# Kill the previous instance before starting the new one.
+# Eliminates blue-green overlap where two instances share a split in-memory queue.
+# Trade-off: ~10s downtime during deploys — acceptable for a background worker.
+numReplicas = 1
+sleepApplication = false
