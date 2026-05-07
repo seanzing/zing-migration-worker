@@ -803,27 +803,76 @@ function rewriteHtml(html, pageUrl, sitePrefix = '') {
     } catch {}
   });
 
-  // Form replacement
+  // Form replacement — normalize ALL contact forms to ZING standard fields + AJAX submit
   $('form').each((_, el) => {
     const $form = $(el);
     const action = ($form.attr('action') || '').toLowerCase();
     const html = $form.html() || '';
+    const isDudaForm = $form.find('[name^="dmform-"]').length > 0 || html.includes('dmform-');
     const isContactForm =
-      html.includes('name="name"') || html.includes('name="email"') ||
-      html.includes('name="message"') || html.includes('name="phone"') ||
+      isDudaForm ||
       html.includes('type="email"') ||
       action.includes('contact') || action.includes('submit') ||
       $form.find('textarea').length > 0;
-    if (isContactForm) {
-      $form.attr('action', 'https://forms.zingmigration.com/submit');
-      $form.attr('method', 'POST');
-      if ($form.find('input[name="site_id"]').length === 0) {
-        $form.prepend(`<input type="hidden" name="site_id" value="${slug}">`);
-      }
-      if ($form.find('input[name="ownerEmail"]').length === 0) {
-        $form.prepend(`<input type="hidden" name="ownerEmail" value="">`);
-      }
-    }
+
+    if (!isContactForm) return;
+
+    const btnText = $form.find('[type="submit"]').first().text().trim() || 'Send Message';
+    const formId = `zing-form-${slug}-${Math.random().toString(36).slice(2,6)}`;
+    $form.attr('action', 'https://forms.zingmigration.com/submit');
+    $form.attr('method', 'POST');
+    $form.attr('id', formId);
+    $form.html(`
+      <input type="text" name="website" style="display:none;" tabindex="-1" autocomplete="off">
+      <input type="hidden" name="site_id" value="${slug}">
+      <input type="hidden" name="form_type" value="contact">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <input type="text" name="name" placeholder="Your Name" required
+          style="width:100%;padding:12px 16px;border-radius:6px;border:1px solid rgba(128,128,128,0.3);background:rgba(255,255,255,0.07);color:inherit;font-size:1rem;font-family:inherit;box-sizing:border-box;outline:none;">
+        <input type="tel" name="phone" placeholder="Phone Number" required
+          style="width:100%;padding:12px 16px;border-radius:6px;border:1px solid rgba(128,128,128,0.3);background:rgba(255,255,255,0.07);color:inherit;font-size:1rem;font-family:inherit;box-sizing:border-box;outline:none;">
+        <input type="email" name="email" placeholder="Email Address (optional)"
+          style="width:100%;padding:12px 16px;border-radius:6px;border:1px solid rgba(128,128,128,0.3);background:rgba(255,255,255,0.07);color:inherit;font-size:1rem;font-family:inherit;box-sizing:border-box;outline:none;">
+        <textarea name="message" placeholder="Tell us about your project (optional)" rows="4"
+          style="width:100%;padding:12px 16px;border-radius:6px;border:1px solid rgba(128,128,128,0.3);background:rgba(255,255,255,0.07);color:inherit;font-size:1rem;font-family:inherit;box-sizing:border-box;outline:none;resize:vertical;"></textarea>
+        <button type="submit" id="${formId}-btn"
+          style="width:100%;padding:14px;background:#2a7c6f;color:#fff;border:none;border-radius:6px;font-size:1rem;font-weight:700;font-family:inherit;cursor:pointer;letter-spacing:0.04em;text-transform:uppercase;transition:background 0.2s;"
+          onmouseover="this.style.background='#1e3530'" onmouseout="this.style.background='#2a7c6f'">
+          ${btnText}
+        </button>
+        <div id="${formId}-msg" style="display:none;text-align:center;font-size:0.9rem;padding:12px;border-radius:6px;"></div>
+      </div>
+      <script>
+      (function(){
+        var form=document.getElementById('${formId}');
+        if(!form)return;
+        form.addEventListener('submit',function(e){
+          e.preventDefault();
+          var btn=document.getElementById('${formId}-btn');
+          var msg=document.getElementById('${formId}-msg');
+          btn.disabled=true; btn.textContent='Sending...';
+          var data=Object.fromEntries(new FormData(form).entries());
+          fetch('https://forms.zingmigration.com/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+          .then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j};});})
+          .then(function(res){
+            msg.style.display='block';
+            if(res.ok){
+              msg.style.background='rgba(42,124,111,0.15)';msg.style.color='#2a7c6f';
+              msg.textContent=res.j.message||"Thanks! We'll be in touch soon.";
+              form.reset();btn.textContent='Sent!';
+            } else {
+              msg.style.background='rgba(200,50,50,0.1)';msg.style.color='#c0392b';
+              msg.textContent=res.j.error||'Something went wrong.';btn.disabled=false;btn.textContent='${btnText}';
+            }
+          })
+          .catch(function(){
+            msg.style.display='block';msg.style.background='rgba(200,50,50,0.1)';msg.style.color='#c0392b';
+            msg.textContent='Could not send. Please call us directly.';btn.disabled=false;btn.textContent='${btnText}';
+          });
+        });
+      })();
+      </script>
+    `);
   });
 
   // Remove Duda popup overlays — these require JS to close; without it they block the page.
