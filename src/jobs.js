@@ -7,6 +7,13 @@ import { runMigration } from './migrate-runner.js';
 import { pushToGitHub } from './github.js';
 import { createJobRecord, completeJobRecord, failJobRecord } from './supabase.js';
 
+const MAX_CONCURRENT = 4;
+
+function generateSiteId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WRANGLER = join(__dirname, '../node_modules/.bin/wrangler');
 
@@ -55,10 +62,11 @@ async function deployToCloudflare(slug, siteDir, onLog) {
 }
 
 const jobs = new Map();
-let running = false;
+let runningCount = 0;
 const queue = [];
 
-export function createJob(url, slug, name) {
+export function createJob(url, slugOrNull, name) {
+  const slug = slugOrNull || generateSiteId();
   const job = {
     id: uuid(),
     url,
@@ -130,11 +138,18 @@ export function enqueue(job) {
   runNext();
 }
 
-async function runNext() {
-  if (running || queue.length === 0) return;
-  running = true;
+function runNext() {
+  while (runningCount < MAX_CONCURRENT && queue.length > 0) {
+    runningCount++;
+    const job = queue.shift();
+    processJob(job).finally(() => {
+      runningCount--;
+      runNext();
+    });
+  }
+}
 
-  const job = queue.shift();
+async function processJob(job) {
   job.status = 'running';
   job.startedAt = new Date().toISOString();
 
@@ -201,7 +216,4 @@ async function runNext() {
     }
     job.subscribers.clear();
   }
-
-  running = false;
-  runNext();
 }

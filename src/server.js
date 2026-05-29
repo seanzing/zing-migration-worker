@@ -45,21 +45,21 @@ app.post('/jobs', auth, (req, res) => {
   if (sites && Array.isArray(sites)) {
     const jobIds = [];
     for (const site of sites) {
-      if (!site.url || !site.slug) continue;
-      const job = createJob(site.url, site.slug, site.name || '');
+      if (!site.url) continue;
+      const job = createJob(site.url, site.slug || null, site.name || '');
       enqueue(job);
       jobIds.push(job.id);
     }
     return res.json({ jobIds });
   }
 
-  if (!url || !slug) {
-    return res.status(400).json({ error: 'url and slug are required' });
+  if (!url) {
+    return res.status(400).json({ error: 'url is required' });
   }
 
-  const job = createJob(url, slug, name || '');
+  const job = createJob(url, slug || null, name || '');
   enqueue(job);
-  res.json({ jobId: job.id });
+  res.json({ jobId: job.id, siteId: job.slug });
 });
 
 // List all jobs
