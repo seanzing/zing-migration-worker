@@ -7,7 +7,7 @@ import { runMigration } from './migrate-runner.js';
 import { pushToGitHub } from './github.js';
 import { createJobRecord, completeJobRecord, failJobRecord } from './supabase.js';
 
-const MAX_CONCURRENT = 4;
+const MAX_CONCURRENT = 2;
 
 // GitHub push mutex — serializes all GitHub operations across concurrent jobs.
 // Playwright crawls run in parallel; only one job at a time pushes to GitHub.

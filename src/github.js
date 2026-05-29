@@ -36,9 +36,9 @@ async function gh(path, opts = {}, attempt = 0) {
   const text = await res.text();
   // Retry on secondary rate limit (403 with rate limit message) or 429
   if ((res.status === 403 && text.includes('secondary rate limit')) || res.status === 429) {
-    if (attempt < 5) {
-      const backoff = Math.min(30000, 5000 * Math.pow(2, attempt)); // 5s, 10s, 20s, 30s, 30s
-      console.log(`GitHub rate limit hit, retrying in ${backoff / 1000}s (attempt ${attempt + 1}/5)...`);
+    if (attempt < 6) {
+      const backoff = Math.min(120000, 15000 * Math.pow(2, attempt)); // 15s, 30s, 60s, 120s, 120s, 120s
+      console.log(`GitHub rate limit hit, retrying in ${backoff / 1000}s (attempt ${attempt + 1}/6)...`);
       await sleep(backoff);
       return gh(path, opts, attempt + 1);
     }
@@ -51,10 +51,11 @@ export async function pushToGitHub(slug, localDir, onLog) {
   const allFiles = walkDir(localDir);
   if (onLog) onLog(`  Creating ${allFiles.length} blobs...`);
 
-  // 1. Create blobs for all files — 10 concurrent.
+  // 1. Create blobs for all files — 5 concurrent with inter-batch delay.
   //    GitHub secondary rate limits trigger on high concurrent mutation bursts;
-  //    10 is safe even when multiple jobs are queued back-to-back.
-  const BLOB_CONCURRENCY = 10;
+  //    slow cadence prevents triggering even under serialized pushes.
+  const BLOB_CONCURRENCY = 5;
+  const BLOB_BATCH_DELAY_MS = 300;
   const blobShas = new Array(allFiles.length);
   let blobsDone = 0;
 
@@ -70,6 +71,7 @@ export async function pushToGitHub(slug, localDir, onLog) {
       blobsDone++;
     }));
     if (onLog) onLog(`  Blobs: ${Math.min(i + BLOB_CONCURRENCY, allFiles.length)}/${allFiles.length}`);
+    if (i + BLOB_CONCURRENCY < allFiles.length) await sleep(BLOB_BATCH_DELAY_MS);
   }
 
   // 2. Get current HEAD commit and tree SHA
