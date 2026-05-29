@@ -9,6 +9,32 @@ import { createJobRecord, completeJobRecord, failJobRecord } from './supabase.js
 
 const MAX_CONCURRENT = 4;
 
+// GitHub push mutex — serializes all GitHub operations across concurrent jobs.
+// Playwright crawls run in parallel; only one job at a time pushes to GitHub.
+let githubPushRunning = false;
+const githubPushQueue = [];
+
+export function queueGitHubPush(fn) {
+  return new Promise((resolve, reject) => {
+    githubPushQueue.push({ fn, resolve, reject });
+    drainGitHubQueue();
+  });
+}
+
+async function drainGitHubQueue() {
+  if (githubPushRunning || githubPushQueue.length === 0) return;
+  githubPushRunning = true;
+  const { fn, resolve, reject } = githubPushQueue.shift();
+  try {
+    resolve(await fn());
+  } catch (err) {
+    reject(err);
+  } finally {
+    githubPushRunning = false;
+    drainGitHubQueue();
+  }
+}
+
 function generateSiteId() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -172,10 +198,13 @@ async function processJob(job) {
       onLog: (line) => broadcast(job, line),
     });
 
-    broadcast(job, 'Migration complete. Pushing to GitHub...');
+    broadcast(job, 'Migration complete. Queuing GitHub push...');
 
-    // Push to GitHub
-    const { filesUploaded } = await pushToGitHub(job.slug, siteOutputDir, (line) => broadcast(job, line));
+    // Push to GitHub — serialized via mutex to avoid secondary rate limits
+    const { filesUploaded } = await queueGitHubPush(async () => {
+      broadcast(job, 'Pushing to GitHub...');
+      return pushToGitHub(job.slug, siteOutputDir, (line) => broadcast(job, line));
+    });
     broadcast(job, `Pushed ${filesUploaded} files to GitHub.`);
 
     // Deploy to Cloudflare Pages (non-fatal)
