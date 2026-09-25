@@ -128,7 +128,7 @@ app.delete('/jobs/:id', auth, (req, res) => {
   res.json({ deleted: true });
 });
 
-// Return scraped site files as a ZIP archive — no GitHub/CF Pages needed.
+// Return scraped site files as a tar.gz — no GitHub/CF Pages needed.
 // Works as long as the files still exist in /tmp/migrations/{slug}/.
 app.get('/jobs/:id/zip', auth, async (req, res) => {
   const job = getJob(req.params.id);
@@ -136,25 +136,22 @@ app.get('/jobs/:id/zip', auth, async (req, res) => {
   if (job.status === 'running') return res.status(409).json({ error: 'Job still running — wait for completion' });
 
   const { join } = await import('path');
-  const { createReadStream, existsSync } = await import('fs');
-  const { exec } = await import('child_process');
-  const { promisify } = await import('util');
-  const execAsync = promisify(exec);
+  const { existsSync } = await import('fs');
+  const { spawn } = await import('child_process');
 
   const siteDir = join('/tmp/migrations', job.slug);
   if (!existsSync(siteDir)) {
     return res.status(404).json({ error: 'Site files not found — they may have been cleaned up. Re-run the job.' });
   }
 
-  const zipPath = join('/tmp', `${job.slug}.zip`);
-  try {
-    await execAsync(`cd '${siteDir}' && zip -r '${zipPath}' .`);
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${job.slug}.zip"`);
-    createReadStream(zipPath).pipe(res);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  res.setHeader('Content-Type', 'application/gzip');
+  res.setHeader('Content-Disposition', `attachment; filename="${job.slug}.tar.gz"`);
+
+  // Stream tar directly to response — no temp file needed
+  const tar = spawn('tar', ['czf', '-', '-C', siteDir, '.']);
+  tar.stdout.pipe(res);
+  tar.stderr.on('data', d => console.error('[tar]', d.toString()));
+  tar.on('error', err => { if (!res.headersSent) res.status(500).json({ error: err.message }); });
 });
 
 
